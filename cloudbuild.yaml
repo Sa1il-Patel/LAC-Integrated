@@ -1,37 +1,47 @@
-# In this directory, run the following command to build this builder.
-# $ gcloud builds submit
+# cloudbuild.yaml
+# Substitutions let you deploy to different envs without changing the file.
+# Set _ENV to "stg" or "prd" in the trigger.
+substitutions:
+  _ENV: "stg"
+  _REGION: "us-central1"
+  _REPO_REGION: "us"
+  _REPO: "app"
+  _SERVICE: "my-app"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: ALLOW_LOOSE
 
 steps:
-- name: 'gcr.io/cloud-builders/docker'
-  args:
-  - 'build'
-  - '--no-cache'
-  - '--build-arg=BASE_IMAGE=launcher.gcr.io/google/openjdk8'
-  - '--build-arg=DOCKER_VERSION=5:19.03.8~3-0~debian-stretch'
-  - '--tag=gcr.io/$PROJECT_ID/javac:8'
-  - '--tag=gcr.io/$PROJECT_ID/javac'
-  - '--tag=gcr.io/$PROJECT_ID/java/javac:8'
-  - '--tag=gcr.io/$PROJECT_ID/java/javac'
-  - '.'
-  id: 'BUILD_JDK_8'
+  # 1) Build the container image
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - "-t"
+      - "${_REPO_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "-f"
+      - Dockerfile
+      - "."
 
-# Test that javac and docker are installed, for all built images, and that apt-get update will work
-# in child images
+  # 2) Push the image to Artifact Registry
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - "${_REPO_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${SHORT_SHA}"
 
-- name: 'gcr.io/$PROJECT_ID/javac:8'
-  args: ['-version']
-  waitFor: ['BUILD_JDK_8']
-- name: 'gcr.io/$PROJECT_ID/javac:8'
-  entrypoint: 'docker'
-  args: ['version']
-  waitFor: ['BUILD_JDK_8']
-- name: 'gcr.io/$PROJECT_ID/javac:8'
-  entrypoint: 'apt-get'
-  args: ['update']
-  waitFor: ['BUILD_JDK_8']
+  # 3) Deploy to Cloud Run with the env-specific runtime SA
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        RUNTIME_SA="run-${_ENV}-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+        gcloud run deploy "${_SERVICE}-${_ENV}" \
+          --image "${_REPO_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}" \
+          --region "${_REGION}" \
+          --platform managed \
+          --service-account "${RUNTIME_SA}" \
+          --allow-unauthenticated
 
 images:
-- 'gcr.io/$PROJECT_ID/javac:8'
-- 'gcr.io/$PROJECT_ID/javac'
-- 'gcr.io/$PROJECT_ID/java/javac:8'
-- 'gcr.io/$PROJECT_ID/java/javac'
+  - "${_REPO_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${SHORT_SHA}"
