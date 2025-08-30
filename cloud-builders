@@ -1,43 +1,40 @@
-ARG BASE_IMAGE=launcher.gcr.io/google/openjdk8
-FROM ${BASE_IMAGE}
+PROJECT_ID="YOUR_PROJECT_ID"
+REPO_REGION="us"
+REPO="app"
+REGION="us-central1"
+for ENV in stg prd; do
+  gcloud iam service-accounts create run-${ENV}-sa \
+    --display-name="Cloud Run runtime SA (${ENV})" \
+    --project ${PROJECT_ID}
+done
 
-ARG DOCKER_VERSION=5:19.03.8~3-0~debian-stretch
-ARG PYTHON_VERSION=3.11.5
+gcloud artifacts repositories create ${REPO} \
+  --repository-format=docker \
+  --location=${REPO_REGION} \
+  --project ${PROJECT_ID}
 
-# https://lists.debian.org/debian-devel-announce/2023/03/msg00006.html
-# Base image uses debian9/stretch, and as such needs to have
-# sources.list point to archive.debian.org.
-RUN \
-   sed -i s/httpredir.debian.org/archive.debian.org/g /etc/apt/sources.list && \
-   sed -i s/deb.debian.org/archive.debian.org/g /etc/apt/sources.list && \
-   sed -i 's|security.debian.org|archive.debian.org/debian-security/|g' /etc/apt/sources.list && \
-   sed -i '/stretch-updates/d' /etc/apt/sources.list
+PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)")
+CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
 
-# Install Docker based on instructions from:
-# https://docs.docker.com/engine/installation/linux/docker-ce/debian
-RUN \
-   apt-get update -qqy && apt-get dist-upgrade -yq && \
-   apt-get --fix-broken -y install && \
-   apt-get -y install apt-transport-https ca-certificates curl gnupg2 software-properties-common && \
-   curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
-   apt-key fingerprint 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 && \
-   add-apt-repository \
-      "deb [arch=amd64] https://download.docker.com/linux/debian \
-      $(lsb_release -cs) \
-      stable" && \
-   apt-get -y update && \
-   apt-get -y install docker-ce=${DOCKER_VERSION} docker-ce-cli=${DOCKER_VERSION} && \
-   # Clean up build packages
-   apt-get remove -y --purge curl gnupg2 software-properties-common && \
-   apt-get clean
+gcloud artifacts repositories add-iam-policy-binding ${REPO} \
+  --location=${REPO_REGION} \
+  --member="serviceAccount:${CB_SA}" \
+  --role="roles/artifactregistry.writer" \
+  --project ${PROJECT_ID}
 
-# Need to install python from source because Debian 9 (stretch) doesn't provide supported versions of python (3.8+)
-RUN \
-   apt-get -y install python3-dev zlib1g-dev && \
-   wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz && \
-   tar xzf Python-${PYTHON_VERSION}.tgz && \
-   cd Python-${PYTHON_VERSION} && \
-   ./configure --enable-optimizations && \
-   make install
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${CB_SA}" \
+  --role="roles/run.admin"
 
-ENTRYPOINT ["javac"]
+for ENV in stg prd; do
+  gcloud iam service-accounts add-iam-policy-binding run-${ENV}-sa@${PROJECT_ID}.iam.gserviceaccount.com \
+    --member="serviceAccount:${CB_SA}" \
+    --role="roles/iam.serviceAccountUser" \
+    --project ${PROJECT_ID}
+done
+
+for ENV in stg prd; do
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+    --member="serviceAccount:run-${ENV}-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
